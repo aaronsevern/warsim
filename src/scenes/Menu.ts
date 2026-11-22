@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { FONT, GAME_H, GAME_W, gatherTime, recipeText, UNIT_INFO, UNIT_TYPES } from '../config';
+import { FONT, GAME_H, GAME_W, gatherTime, MAX_UNITS_PER_TEAM, recipeText, UNIT_INFO, UNIT_TYPES } from '../config';
 import { newGame } from '../state';
 import { Button } from '../ui';
 
@@ -33,8 +33,8 @@ export class MenuScene extends Phaser.Scene {
       this.add.text(x - 110, 485, UNIT_INFO[t].desc, { fontFamily: FONT, fontSize: '15px', color: '#cfd8e3', wordWrap: { width: 250 } });
     });
 
-    const start = () => {
-      newGame();
+    const startClassic = () => {
+      newGame('classic');
       this.scene.start('Handoff', {
         title: 'Player 1',
         lines: ['Get ready to gather resources!', 'Player 2: no peeking.'],
@@ -44,7 +44,22 @@ export class MenuScene extends Phaser.Scene {
         team: 0,
       });
     };
-    new Button(this, GAME_W / 2, 630, 'START GAME', start, { w: 280, h: 64, fontSize: 28, fill: 0x2e7d32 });
-    this.input.keyboard?.once('keydown-ENTER', start);
+    const startCreative = () => {
+      newGame('creative');
+      this.scene.start('Handoff', {
+        title: 'Creative Mode',
+        lines: ['Unlimited resources — no gathering needed.', `Up to ${MAX_UNITS_PER_TEAM} units each, limited by space.`,
+          'Player 1 positions units first. Player 2: look away!'],
+        button: 'Player 1: Position Units',
+        next: 'Battle',
+        team: 0,
+      });
+    };
+    new Button(this, GAME_W / 2 - 200, 625, 'CLASSIC', startClassic, { w: 280, h: 60, fontSize: 28, fill: 0x2e7d32 });
+    new Button(this, GAME_W / 2 + 200, 625, 'CREATIVE', startCreative, { w: 280, h: 60, fontSize: 28, fill: 0x6a1b9a });
+    const cap = { fontFamily: FONT, fontSize: '15px', color: '#cfd8e3' };
+    this.add.text(GAME_W / 2 - 200, 670, 'Gather, build, then battle', cap).setOrigin(0.5, 0);
+    this.add.text(GAME_W / 2 + 200, 670, 'Unlimited units, straight to battle', cap).setOrigin(0.5, 0);
+    this.input.keyboard?.once('keydown-ENTER', startClassic);
   }
 }

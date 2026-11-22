@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import {
-  FONT, GAME_H, GAME_W, RECIPES, recipeText, RES_INFO, RESOURCES, type ResourceType, TEAM_COLORS, TEAM_CSS, TEAM_NAMES,
+  FONT, GAME_H, GAME_W, MAX_UNITS_PER_TEAM, RECIPES, recipeText, RES_INFO, RESOURCES, type ResourceType, TEAM_COLORS, TEAM_CSS, TEAM_NAMES,
   UNIT_INFO, UNIT_TYPES, type UnitType,
 } from '../config';
 import { type Army, emptyArmy, game, type Inventory } from '../state';
@@ -73,8 +73,12 @@ export class ShopScene extends Phaser.Scene {
     return rem;
   }
 
+  private total(): number {
+    return UNIT_TYPES.reduce((s, t) => s + this.counts[t], 0);
+  }
+
   private canAfford(t: UnitType, rem: Inventory): boolean {
-    return Object.entries(RECIPES[t]).every(([r, n]) => rem[r as ResourceType] >= n!);
+    return this.total() < MAX_UNITS_PER_TEAM && Object.entries(RECIPES[t]).every(([r, n]) => rem[r as ResourceType] >= n!);
   }
 
   private change(t: UnitType, delta: number): void {
@@ -82,7 +86,7 @@ export class ShopScene extends Phaser.Scene {
       this.counts[t] = Math.max(0, this.counts[t] + delta);
     } else {
       for (let i = 0; i < delta; i++) {
-        if (!this.canAfford(t, this.remaining())) break;
+        if (!this.canAfford(t, this.remaining()) || this.total() >= MAX_UNITS_PER_TEAM) break;
         this.counts[t]++;
       }
     }

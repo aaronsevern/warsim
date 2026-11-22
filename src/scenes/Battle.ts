@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import {
-  FONT, GAME_H, GAME_W, MAP_H, MAP_W, RES_INFO, TEAM_COLORS, TEAM_CSS, TEAM_NAMES, TILE, UNIT_INFO, UNIT_TYPES,
+  FONT, GAME_H, GAME_W, MAP_H, MAP_W, MAX_UNITS_PER_TEAM, RES_INFO, TEAM_COLORS, TEAM_CSS, TEAM_NAMES, TILE, UNIT_INFO, UNIT_TYPES,
   type UnitType, WORLD_H, WORLD_W,
 } from '../config';
 import { generateMap, largestComponent } from '../mapgen';
@@ -43,6 +43,8 @@ export class BattleScene extends Phaser.Scene {
   private panelTexts: Phaser.GameObjects.Text[][] = [];
   private timeText!: Phaser.GameObjects.Text;
   private sim: BattleSim | null = null;
+  private creative = false;
+  private painting = false;
 
   constructor() { super('Battle'); }
 
@@ -50,7 +52,12 @@ export class BattleScene extends Phaser.Scene {
     this.phase = 'place';
     this.team = 0;
     this.placed = [new Map(), new Map()];
-    this.pool = game.armies.map((a) => ({ ...a }));
+    this.creative = game.mode === 'creative';
+    this.painting = false;
+    // Creative: unlimited units; the only limits are free space and MAX_UNITS_PER_TEAM.
+    this.pool = this.creative
+      ? [0, 1].map(() => ({ defense: Infinity, melee: Infinity, range: Infinity, rideable: Infinity }))
+      : game.armies.map((a) => ({ ...a }));
     this.sim = null;
     this.speedIdx = 0;
     this.panelTexts = [];
@@ -85,6 +92,7 @@ export class BattleScene extends Phaser.Scene {
     this.buildHud();
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => this.onMove(p));
     this.input.on('pointerdown', (p: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]) => this.onDown(p, over));
+    this.input.on('pointerup', () => { this.painting = false; });
     UNIT_TYPES.forEach((t, i) => {
       this.input.keyboard?.on(`keydown-${['ONE', 'TWO', 'THREE', 'FOUR'][i]}`, () => this.select(t));
     });
@@ -135,9 +143,12 @@ export class BattleScene extends Phaser.Scene {
   private refreshPanels(): void {
     for (let team = 0; team < 2; team++) {
       UNIT_TYPES.forEach((t, i) => {
-        let n = game.armies[team][t];
-        if (this.sim) n = this.sim.units.filter((u) => u.team === team && u.type === t).length;
-        this.panelTexts[team][i].setText(String(n));
+        let s: string;
+        if (this.sim) s = String(this.sim.units.filter((u) => u.team === team && u.type === t).length);
+        else if (!this.creative) s = String(game.armies[team][t]);
+        else if (this.phase === 'handoff' || (this.phase === 'place' && team !== this.team)) s = '?';
+        else s = String([...this.placed[team].values()].filter((e) => e.type === t).length);
+        this.panelTexts[team][i].setText(s);
       });
     }
   }
@@ -151,7 +162,19 @@ export class BattleScene extends Phaser.Scene {
   private canPlaceAt(team: number, tx: number, ty: number): boolean {
     if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H || !this.inZone(team, tx)) return false;
     const i = ty * MAP_W + tx;
-    return !this.blocked[i] && this.reachable[i] === 1 && !this.placed[team].has(i);
+    return !this.blocked[i] && this.reachable[i] === 1 && !this.placed[team].has(i) && this.placed[team].size < MAX_UNITS_PER_TEAM;
+  }
+
+  /** Max units a team can field: free reachable tiles in its zone, capped at MAX_UNITS_PER_TEAM. */
+  private capacity(team: number): number {
+    let n = 0;
+    for (let ty = 0; ty < MAP_H; ty++) {
+      for (let tx = 0; tx < MAP_W; tx++) {
+        const i = ty * MAP_W + tx;
+        if (this.inZone(team, tx) && !this.blocked[i] && this.reachable[i]) n++;
+      }
+    }
+    return Math.min(MAX_UNITS_PER_TEAM, n);
   }
 
   private beginPlacement(team: number): void {
@@ -162,8 +185,10 @@ export class BattleScene extends Phaser.Scene {
     const x0 = team === 0 ? 0 : (MAP_W - ZONE_COLS) * TILE;
     this.zoneG.clear().fillStyle(TEAM_COLORS[team], 0.16).fillRect(x0, 0, ZONE_COLS * TILE, WORLD_H)
       .lineStyle(6, TEAM_COLORS[team], 0.8).strokeRect(x0, 0, ZONE_COLS * TILE, WORLD_H);
-    this.banner.setText(`${TEAM_NAMES[team]}: place your units in the highlighted zone.  Left-click place · Right-click remove · 1-4 select`)
-      .setColor(TEAM_CSS[team]);
+    this.banner.setColor(TEAM_CSS[team]);
+    this.placeBtns[0].setVisible(!this.creative);
+    this.placeBtns[1].setVisible(true);
+    this.placeBtns[2].setVisible(true);
     const first = UNIT_TYPES.find((t) => this.pool[team][t] > 0);
     this.select(first ?? 'defense');
   }
@@ -178,11 +203,23 @@ export class BattleScene extends Phaser.Scene {
   private refreshPlacement(): void {
     const pool = this.pool[this.team];
     for (const t of UNIT_TYPES) {
-      this.palette[t].setLabel(`${t === this.selected ? '▶ ' : ''}${UNIT_INFO[t].label} ×${pool[t]}`)
+      const n = pool[t] === Infinity ? '∞' : String(pool[t]);
+      this.palette[t].setLabel(`${t === this.selected ? '▶ ' : ''}${UNIT_INFO[t].label} ×${n}`)
         .setEnabled(pool[t] > 0).setSelected(t === this.selected);
     }
-    const left = UNIT_TYPES.reduce((s, t) => s + pool[t], 0);
-    this.placeBtns[2].setLabel(left > 0 ? `Done (${left} left)` : 'Done ✓');
+    const placed = this.placed[this.team].size;
+    const cap = this.capacity(this.team);
+    if (this.creative) {
+      this.placeBtns[2].setLabel(`Done (${placed}/${cap})`);
+    } else {
+      const left = UNIT_TYPES.reduce((s, t) => s + pool[t], 0);
+      this.placeBtns[2].setLabel(left > 0 ? `Done (${left} left)` : 'Done ✓');
+    }
+    const help = this.creative
+      ? 'Left-click/drag place · Right-click/drag remove · Shift-click fill column · 1-4 select'
+      : 'Left-click/drag place · Right-click/drag remove · 1-4 select';
+    this.banner.setText(`${TEAM_NAMES[this.team]}: place units in the highlighted zone — ${placed}/${cap} units\n${help}`);
+    this.refreshPanels();
   }
 
   private toTile(p: Phaser.Input.Pointer): { tx: number; ty: number } {
@@ -192,6 +229,10 @@ export class BattleScene extends Phaser.Scene {
   private onMove(p: Phaser.Input.Pointer): void {
     if (this.phase !== 'place') { this.ghost.setVisible(false); return; }
     const { tx, ty } = this.toTile(p);
+    if (this.painting && p.y < GAME_H - BAR_H) {
+      if (p.rightButtonDown()) this.removeAt(tx, ty);
+      else if (p.leftButtonDown()) this.placeAt(tx, ty);
+    }
     const inside = tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H && p.y < GAME_H - BAR_H;
     this.ghost.setVisible(inside && this.pool[this.team][this.selected] > 0)
       .setPosition(tx * TILE + TILE / 2, ty * TILE + TILE / 2);
@@ -201,26 +242,34 @@ export class BattleScene extends Phaser.Scene {
   private onDown(p: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]): void {
     if (this.phase !== 'place' || over.length || p.y >= GAME_H - BAR_H) return;
     const { tx, ty } = this.toTile(p);
+    this.painting = true;
+    if (p.rightButtonDown()) this.removeAt(tx, ty);
+    else if (this.creative && p.event.shiftKey) {
+      for (let y = 0; y < MAP_H; y++) this.placeAt(tx, y);
+    } else this.placeAt(tx, ty);
+    this.onMove(p);
+  }
+
+  private removeAt(tx: number, ty: number): void {
+    if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return;
     const i = ty * MAP_W + tx;
-    if (p.rightButtonDown()) {
-      const e = this.placed[this.team].get(i);
-      if (e) {
-        e.img.destroy();
-        this.placed[this.team].delete(i);
-        this.pool[this.team][e.type]++;
-        this.refreshPlacement();
-      }
-      return;
-    }
+    const e = this.placed[this.team].get(i);
+    if (!e) return;
+    e.img.destroy();
+    this.placed[this.team].delete(i);
+    this.pool[this.team][e.type]++;
+    this.refreshPlacement();
+  }
+
+  private placeAt(tx: number, ty: number): void {
     if (this.pool[this.team][this.selected] <= 0 || !this.canPlaceAt(this.team, tx, ty)) return;
-    this.placeUnit(this.team, this.selected, i);
+    this.placeUnit(this.team, this.selected, ty * MAP_W + tx);
     if (this.pool[this.team][this.selected] === 0) {
       const next = UNIT_TYPES.find((t) => this.pool[this.team][t] > 0);
       if (next) this.selected = next;
       this.ghost.setTexture(`unit_${this.selected}_${this.team}`);
     }
     this.refreshPlacement();
-    this.onMove(p);
   }
 
   private placeUnit(team: number, type: UnitType, i: number): void {
@@ -248,7 +297,9 @@ export class BattleScene extends Phaser.Scene {
     cands.sort((a, b) => a.key - b.key);
     let k = 0;
     for (const t of ['defense', 'melee', 'rideable', 'range'] as UnitType[]) {
-      while (this.pool[team][t] > 0 && k < cands.length) this.placeUnit(team, t, cands[k++].i);
+      while (this.pool[team][t] > 0 && k < cands.length && this.placed[team].size < MAX_UNITS_PER_TEAM) {
+        this.placeUnit(team, t, cands[k++].i);
+      }
     }
   }
 
@@ -263,10 +314,12 @@ export class BattleScene extends Phaser.Scene {
 
   private donePlacing(): void {
     if (this.phase !== 'place') return;
-    this.autoPlace(this.team);
+    if (!this.creative) this.autoPlace(this.team); // infinite pool would fill the whole zone
     this.ghost.setVisible(false);
+    this.painting = false;
     if (this.team === 0) {
       this.phase = 'handoff';
+      this.refreshPanels();
       this.placeC[0].setVisible(false);
       this.zoneG.clear();
       this.overlay(TEAM_NAMES[1], ['Player 1 has positioned their army.', 'Pass the controls to Player 2.'],
@@ -284,6 +337,7 @@ export class BattleScene extends Phaser.Scene {
     for (const t of UNIT_TYPES) this.palette[t].setVisible(false);
     for (const b of this.placeBtns) b.setVisible(false);
     this.battleBtn.setVisible(true);
+    this.refreshPanels();
     this.banner.setText('Both armies are in position. Click BATTLE to begin!').setColor('#ffd54a');
   }
 

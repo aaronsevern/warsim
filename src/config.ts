@@ -11,6 +11,7 @@ export const PLAYER_SPEED = 210;
 export const PLAYER_RADIUS = 12;
 export const REACH = 80;
 export const SPAWN = { x: WORLD_W / 2, y: WORLD_H / 2 };
+export const MAX_UNITS_PER_TEAM = 400;
 
 export const FONT = '"Trebuchet MS", Arial, sans-serif';
 

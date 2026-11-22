@@ -4,6 +4,8 @@ import { Pathfinder } from './pathfinding';
 
 const ARROW_SPEED = 460;
 export const MAX_BATTLE_TIME = 240;
+/** Caps A* calls per step so large armies don't cause frame spikes. */
+const PATH_BUDGET_PER_STEP = 40;
 
 export interface Pt { x: number; y: number }
 
@@ -60,6 +62,7 @@ export class BattleSim {
   arrows: Arrow[] = [];
   time = 0;
   private guardTimer = 0;
+  private pathBudget = 0;
   private pf: Pathfinder;
   private blockedFn: (tx: number, ty: number) => boolean;
 
@@ -82,6 +85,7 @@ export class BattleSim {
 
   step(dt: number): void {
     this.time += dt;
+    this.pathBudget = PATH_BUDGET_PER_STEP;
     this.guardTimer -= dt;
     if (this.guardTimer <= 0) {
       this.guardTimer = 0.3;
@@ -270,7 +274,8 @@ export class BattleSim {
     if (u.direct) { u.path.length = 0; return goal; }
     const gtx = Math.floor(goal.x / TILE), gty = Math.floor(goal.y / TILE);
     const moved = Math.max(Math.abs(gtx - u.pathTx), Math.abs(gty - u.pathTy)) > 2;
-    if (!u.path.length || u.pathTimer <= 0 || moved) {
+    if ((!u.path.length || u.pathTimer <= 0 || moved) && this.pathBudget > 0) {
+      this.pathBudget--;
       u.pathTx = gtx; u.pathTy = gty;
       u.pathTimer = 0.8 + Math.random() * 0.5;
       const res = this.pf.find(Math.floor(u.x / TILE), Math.floor(u.y / TILE), gtx, gty);
